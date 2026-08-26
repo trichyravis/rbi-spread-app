@@ -116,14 +116,39 @@ st.html(f"""
     border: 1px solid rgba(255,215,0,.18); flex-wrap: wrap;
   }}
   .stTabs [data-baseweb="tab"] {{
-    background: transparent; color: {MUTED}; border-radius: 8px;
+    background: transparent; border-radius: 8px;
     padding: 8px 16px; font-weight: 600; font-size: 14px;
+    color: #c7d3e8 !important; -webkit-text-fill-color: #c7d3e8 !important;
   }}
-  .stTabs [aria-selected="true"] {{
-    background: {GOLD} !important; color: {BLUE} !important;
-    -webkit-text-fill-color: {BLUE} !important;
+  .stTabs [data-baseweb="tab"] * {{
+    color: #c7d3e8 !important; -webkit-text-fill-color: #c7d3e8 !important;
+  }}
+  .stTabs [aria-selected="true"] {{ background: {GOLD} !important; }}
+  .stTabs [aria-selected="true"], .stTabs [aria-selected="true"] * {{
+    color: {BLUE} !important; -webkit-text-fill-color: {BLUE} !important;
   }}
   .stTabs [data-baseweb="tab"] p {{ font-size: 14px; font-weight: 600; }}
+
+  /* Force native widget text readable even if the base theme loads light */
+  [data-testid="stWidgetLabel"] *, .stCheckbox *, [data-baseweb="checkbox"] label * {{
+    color: {TXT} !important; -webkit-text-fill-color: {TXT} !important;
+  }}
+  /* Expander (Data settings) — dark surface + light header text */
+  details, [data-testid="stExpander"] details {{
+    background: {CARD} !important; border: 1px solid rgba(255,215,0,.18) !important;
+    border-radius: 12px !important;
+  }}
+  details summary, details summary *,
+  [data-testid="stExpander"] summary, [data-testid="stExpander"] summary * {{
+    color: {TXT} !important; -webkit-text-fill-color: {TXT} !important;
+  }}
+  /* Refresh button */
+  .stButton button {{
+    background: {CARD} !important; border: 1px solid rgba(255,215,0,.35) !important;
+  }}
+  .stButton button p, .stButton button span, .stButton button div {{
+    color: {GOLD} !important; -webkit-text-fill-color: {GOLD} !important;
+  }}
 
   /* Slider accent */
   .stSlider [data-baseweb="slider"] div[role="slider"] {{ background: {GOLD}; }}
