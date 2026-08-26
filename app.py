@@ -1,3 +1,4 @@
+
 # =============================================================================
 # The Mountain Path Academy — India–US 10Y Bond Yield Spread
 # Educational Streamlit App  |  Prof. V. Ravichandran
@@ -52,13 +53,18 @@ LINK_GH      = "https://github.com/trichyravis"
 DEFAULT_IND = 6.87   # India 10Y G-Sec (%)  — reference/fallback
 DEFAULT_US  = 4.65   # US 10Y Treasury (%)  — reference/fallback
 
+_BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def _fred_latest(series_id: str):
-    """Return (latest_value_pct, as_of_date_str) for a FRED series, or None on failure."""
+    """Return (latest_value_pct, as_of_date_str) for a FRED series.
+    Raises on failure so the failure is NOT cached (Streamlit re-tries next run)."""
     if not _HAS_REQUESTS:
-        return None
+        raise RuntimeError("requests unavailable")
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
-    r = requests.get(url, timeout=8, headers={"User-Agent": "MountainPathAcademy/1.0"})
+    r = requests.get(url, timeout=15,
+                     headers={"User-Agent": _BROWSER_UA, "Accept": "text/csv,*/*"})
     r.raise_for_status()
     df = pd.read_csv(io.StringIO(r.text))
     df = df.iloc[:, :2]
@@ -76,8 +82,10 @@ def _age_days(date_str):
     except Exception:
         return None
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def get_live_yields():
+    # Not cached here: successful values are cached inside _fred_latest (1h);
+    # failures raise there (uncached) so a cold-start timeout retries next run
+    # instead of pinning "reference" for an hour.
     out = {"us": None, "us_date": None, "us_stale": False,
            "india": None, "india_date": None, "india_stale": False, "errors": []}
     for key, sid, max_age in (("us", "DGS10", 10), ("india", "INDIRLTLT01STM", 100)):
@@ -185,9 +193,15 @@ html(f"""
 # DATA SETTINGS — live yields with manual override
 # =============================================================================
 with st.expander("⚙️  Data settings — live yields (FRED) & manual override", expanded=False):
-    use_live = st.toggle("Fetch live yields from FRED", value=True,
-                         help="US 10Y (DGS10, daily) and India 10Y (INDIRLTLT01STM, monthly). "
-                              "Uncheck to use reference figures. Values are cached for 1 hour.")
+    tog_col, btn_col = st.columns([3, 1])
+    with tog_col:
+        use_live = st.toggle("Fetch live yields from FRED", value=True,
+                             help="US 10Y (DGS10, daily) and India 10Y (INDIRLTLT01STM, monthly). "
+                                  "Uncheck to use reference figures. Values are cached for 1 hour.")
+    with btn_col:
+        if st.button("↻ Refresh", help="Clear the cache and re-fetch live yields from FRED now"):
+            _fred_latest.clear()
+            st.rerun()
     live = get_live_yields() if use_live else {"us": None, "us_date": None,
                                                "india": None, "india_date": None, "errors": []}
     us_seed  = live["us"]    if live.get("us")    is not None else DEFAULT_US
@@ -391,7 +405,7 @@ with tabs[2]:
     fig.update_yaxes(title_text="Spread (bps)", secondary_y=True, showgrid=False)
     fig.update_layout(title="India & US 10Y Yields and the Spread (2005–2025)",
                       barmode="overlay", hovermode="x unified")
-    st.plotly_chart(plotly_theme(fig, height=460), use_container_width=True)
+    st.plotly_chart(plotly_theme(fig, height=460), width="stretch")
 
     s1, s2, s3, s4, s5 = st.columns(5)
     stats = [("20-Yr Avg Spread","446 bps",LB),("Median","466 bps",LB),
@@ -476,7 +490,7 @@ with tabs[3]:
         fig.update_layout(title="Return vs US Treasury as the Rupee Moves",
                           xaxis_title="Rupee move (%)  ·  left = depreciation",
                           yaxis_title="Excess return vs UST (%)")
-        st.plotly_chart(plotly_theme(fig, height=430, legend=False), use_container_width=True)
+        st.plotly_chart(plotly_theme(fig, height=430, legend=False), width="stretch")
 
     moves  = [2.0, 0.0, -1.0, -2.0, -round(spread, 2), -3.0, -4.0, -6.0, -8.0, -10.0]
     labels = ["Strong Rupee","Stable Rupee","Mild Fall","Fall","Breakeven",
@@ -500,7 +514,7 @@ with tabs[3]:
     st.markdown(f"<div style='color:{GOLD};font-weight:700;font-size:15px;margin:6px 0;'>"
                 f"Rupee Depreciation Scenarios (1-Year Holding) — computed from India {IND:.2f}% / US {USY:.2f}%</div>",
                 unsafe_allow_html=True)
-    st.dataframe(scen, use_container_width=True, hide_index=True)
+    st.dataframe(scen, width="stretch", hide_index=True)
 
 # -----------------------------------------------------------------------------
 # TAB 5 — DRIVERS & IMPLICATIONS
@@ -521,7 +535,7 @@ with tabs[4]:
             "Ballooning US debt (~$34T+) and Treasury supply raise term premia on US bonds.",
             "Contained oil prices reduce imported inflation, allowing lower India yields."],
     })
-    st.dataframe(drivers, use_container_width=True, hide_index=True)
+    st.dataframe(drivers, width="stretch", hide_index=True)
 
     st.markdown(f"<div style='color:{GOLD};font-weight:700;font-size:16px;margin-top:10px;'>Part 2 · Impact on the Rupee (INR)</div>",
                 unsafe_allow_html=True)
@@ -531,7 +545,7 @@ with tabs[4]:
         "After (narrow spread)": ["~220 bps buffer","Marginal / volatile","Higher","Elevated"],
         "Risk Level": ["HIGH","HIGH","MEDIUM","MEDIUM-HIGH"],
     })
-    st.dataframe(inr, use_container_width=True, hide_index=True)
+    st.dataframe(inr, width="stretch", hide_index=True)
 
     html(f"""
     <div class="mp-card" style="border-color:rgba(220,53,69,.45);margin-top:10px;">
@@ -633,7 +647,7 @@ with tabs[5]:
         "Investor Playbook": ["Reduce EM bond exposure","Hedge via commodities","Move to cash/gold",
                               "Add duration in India bonds","Overweight EM bonds"],
     })
-    st.dataframe(play, use_container_width=True, hide_index=True)
+    st.dataframe(play, width="stretch", hide_index=True)
 
     html(f"""
     <div class="mp-card" style="border-color:rgba(255,215,0,.42);">
