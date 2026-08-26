@@ -5,6 +5,7 @@
 # https://themountainpathacademy.com
 # =============================================================================
 import io
+import random
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -215,20 +216,63 @@ html(f"""
 """)
 
 # =============================================================================
+# "THINK ABOUT THIS" PROMPTS — shown while live data is being fetched
+# =============================================================================
+THINK_QS = [
+    "If the spread falls to 180 bps, does it matter <i>which</i> yield moved to get there — the US or the Indian one? Why?",
+    "A US investor earns 6.87% in India, but the rupee falls 3% over the year. Are they better or worse off than simply holding a US Treasury?",
+    "Why does hedging the currency shrink a 222 bps spread down to barely ~12 bps of real pickup?",
+    "If crude oil jumps to $100, trace the chain: what happens to the rupee, to inflation, and to the RBI's room to cut rates?",
+    "Why can the RBI cut rates comfortably when the US Fed is <i>also</i> cutting, but not when US yields are rising?",
+    "India holds $700bn+ in reserves. How does that change what a thin spread <i>means</i> today versus during the 2013 taper tantrum?",
+    "A 10-year bond has duration ≈ 7. If Indian yields rise 0.5%, the price falls ~3.5% — how does that compare with a whole year's carry advantage?",
+    "Global index inclusion adds steady foreign demand for G-secs. Does that push the spread up or down — and through which leg, India or the US?",
+    "‘More sensitive at the margin, but structurally more resilient.’ What makes both halves of that statement true at once?",
+    "If the spread narrows because Indian yields <i>fall</i>, why can that be bullish — the opposite of the same number reached by US yields rising?",
+]
+
+def _think_card():
+    q = random.choice(THINK_QS)
+    return (f"<div class='mp-card' style='border-color:rgba(255,215,0,.45);"
+            f"background:linear-gradient(135deg,{CARD},#16203c);'>"
+            f"<div style='color:{GOLD};-webkit-text-fill-color:{GOLD};font-weight:700;"
+            f"font-size:14px;margin-bottom:4px;'>💭 While the live data loads — think about this</div>"
+            f"<div style='color:{TXT};-webkit-text-fill-color:{TXT};font-size:14px;"
+            f"line-height:1.55;'>{q}</div></div>")
+
+# =============================================================================
 # DATA SETTINGS — live yields with manual override
 # =============================================================================
 with st.expander("⚙️  Data settings — live yields (FRED) & manual override", expanded=False):
     tog_col, btn_col = st.columns([3, 1])
     with tog_col:
-        use_live = st.toggle("Fetch live yields from FRED", value=True,
-                             help="US 10Y (DGS10, daily) and India 10Y (INDIRLTLT01STM, monthly). "
-                                  "Uncheck to use reference figures. Values are cached for 1 hour.")
+        use_live = st.toggle("Fetch live yields from FRED", value=False,
+                             help="Off by default so the app loads instantly with reference figures. "
+                                  "Turn on to pull real-time US 10Y (DGS10) and India 10Y "
+                                  "(INDIRLTLT01STM) from FRED — takes a few seconds. Cached for 1 hour.")
     with btn_col:
-        if st.button("↻ Refresh", help="Clear the cache and re-fetch live yields from FRED now"):
+        if use_live and st.button("↻ Refresh", help="Clear the cache and re-fetch live yields now"):
             _fred_latest.clear()
             st.rerun()
-    live = get_live_yields() if use_live else {"us": None, "us_date": None,
-                                               "india": None, "india_date": None, "errors": []}
+
+    if use_live:
+        if not st.session_state.get("live_fetched", False):
+            # First fetch of the session (the slow one): show a thinking prompt while waiting
+            think_ph = st.empty()
+            with think_ph.container():
+                html(_think_card())
+            with st.spinner("Fetching live yields from FRED…"):
+                live = get_live_yields()
+            think_ph.empty()
+            st.session_state["live_fetched"] = True
+        else:
+            # Values are cached now — instant, no prompt/flash on later reruns
+            live = get_live_yields()
+    else:
+        html(f"<div style='color:{AMBER};-webkit-text-fill-color:{AMBER};font-size:12px;margin:2px 0 6px;'>"
+             f"⚡ Showing reference figures for an instant load — turn on "
+             f"<b>Fetch live yields from FRED</b> above for real-time data.</div>")
+        live = {"us": None, "us_date": None, "india": None, "india_date": None, "errors": []}
     us_seed  = live["us"]    if live.get("us")    is not None else DEFAULT_US
     ind_seed = live["india"] if live.get("india") is not None else DEFAULT_IND
 
@@ -280,12 +324,15 @@ tabs = st.tabs([
 # TAB 1 — OVERVIEW
 # -----------------------------------------------------------------------------
 with tabs[0]:
-    badge = (f"<span style='color:{GRN};-webkit-text-fill-color:{GRN};font-size:11px;'>● live</span>"
-             if IS_LIVE else
-             f"<span style='color:{MUTED};-webkit-text-fill-color:{MUTED};font-size:11px;'>reference</span>")
+    if IS_LIVE:
+        badge = f"<span style='color:{GRN};-webkit-text-fill-color:{GRN};font-size:11px;'>● live</span>"
+        tail = "live from FRED · adjust in ⚙️ Data settings above"
+    else:
+        badge = f"<span style='color:{AMBER};-webkit-text-fill-color:{AMBER};font-size:11px;'>reference</span>"
+        tail = "open ⚙️ Data settings above and turn on <b>live yields</b> for real-time data"
     html(f"<div style='margin:2px 0 8px;color:{MUTED};-webkit-text-fill-color:{MUTED};font-size:12px;'>"
          f"Current yields {badge}<span style='color:{MUTED};-webkit-text-fill-color:{MUTED};'>"
-         f" · adjust in ⚙️ Data settings above</span></div>")
+         f" · {tail}</span></div>")
     metrics = [
         ("India 10Y G-Sec", f"{IND:.2f}%", "Norm ~7.5% · Lower", "India's disinflation success", GRN),
         ("US 10Y Treasury", f"{USY:.2f}%", "Norm ~2.5% · Higher", "Higher-for-longer Fed regime", RED),
