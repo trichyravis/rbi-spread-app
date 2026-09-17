@@ -10,6 +10,7 @@ import io
 import random
 import math
 import time
+from urllib.parse import quote as urlquote
 from html import escape
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
@@ -170,18 +171,44 @@ def _website_quote(payload, symbol):
             "as_of": timestamp.tz_convert("Asia/Kolkata").strftime("%d %b %Y %H:%M IST"),
             "stale": stale, "state": data.get("state")}
 
+@st.cache_data(ttl=120, show_spinner=False)
+def _direct_market_quote(symbol):
+    # Same upstream provider as the website, reached independently.
+    if not _HAS_REQUESTS:
+        raise RuntimeError("requests unavailable")
+    with requests.Session() as session:
+        response = session.get(
+            "https://query1.finance.yahoo.com/v8/finance/chart/" + urlquote(symbol, safe=""),
+            params={"range": "5d", "interval": "1d"}, timeout=(3, 7),
+            headers={"User-Agent": _BROWSER_UA, "Accept": "application/json"})
+        response.raise_for_status()
+    chart = response.json().get("chart", {})
+    results = chart.get("result")
+    if chart.get("error") or not results:
+        raise ValueError(f"Yahoo quote unavailable for {symbol}")
+    meta = results[0].get("meta", {})
+    quote = _website_quote({"data": {symbol: {"price": meta.get("regularMarketPrice"),
+                                             "time": meta.get("regularMarketTime")}}}, symbol)
+    if quote is None:
+        raise ValueError(f"Yahoo returned no valid dated quote for {symbol}")
+    quote["source"] = "Yahoo backup"
+    return quote
+
 @st.cache_data(ttl=60, show_spinner=False)
 def get_live_yields():
     # Independent US sources run together; use the newest completed observation.
     out = {"us": None, "us_date": None, "us_source": None, "us_stale": False,
            "india": None, "india_date": None, "india_stale": False, "errors": [], "diagnostics": [], "markets": {}, "website_error": None}
     pool = ThreadPoolExecutor(max_workers=4)
+    pool = ThreadPoolExecutor(max_workers=7)
     jobs = {
         pool.submit(_website_markets): ("website", "Academy markets feed", 4),
         pool.submit(_fred_latest, "DGS10"): ("us", "FRED DGS10", 10),
         pool.submit(_treasury_latest): ("us", "US Treasury nominal 10Y par yield", 10),
         pool.submit(_fred_latest, "INDIRLTLT01STM"): ("india", "FRED INDIRLTLT01STM", 100),
     }
+    for symbol in ("USDINR=X", "BZ=F", "^VIX"):
+        jobs[pool.submit(_direct_market_quote, symbol)] = ("market", symbol, 4)
     done, pending = set(), set(jobs)
     deadline = time.monotonic() + 10
     while pending:
@@ -193,6 +220,7 @@ def get_live_yields():
         if website_future in done and india_future in done:
             try:
                 if _website_quote(website_future.result(), "^TNX"):
+                if all(_website_quote(website_future.result(), symbol) for symbol in ("^TNX", "USDINR=X", "BZ=F", "^VIX")):
                     break  # Working website feed avoids waiting for slow direct US sources.
             except Exception:
                 pass
@@ -202,14 +230,19 @@ def get_live_yields():
     failures = []
     candidates = []
     website_us_stale = False
+    backup_quotes = {}
     for future in done:
         key, source, max_age = jobs[future]
         try:
+            if key == "market":
+                backup_quotes[source] = future.result()
+                continue
             if key == "website":
                 payload = future.result()
                 for symbol in ("USDINR=X", "BZ=F", "^VIX", "^INDIAVIX"):
                     quote = _website_quote(payload, symbol)
                     if quote:
+                        quote["source"] = "Academy / Yahoo"
                         out["markets"][symbol] = quote
                 quote = _website_quote(payload, "^TNX")
                 if quote:
@@ -231,6 +264,10 @@ def get_live_yields():
         key, source, _ = jobs[future]
         future.cancel()
         failures.append((key, f"{source}: exceeded the 10-second wait limit"))
+    for symbol, quote in backup_quotes.items():
+        current = out["markets"].get(symbol)
+        if current is None or (current["stale"] and not quote["stale"]):
+            out["markets"][symbol] = quote
     if candidates:
         date, _, value, source = max(candidates)
         out["us"], out["us_date"], out["us_source"] = value, date, source
@@ -241,6 +278,7 @@ def get_live_yields():
         if key == "website":
             out["website_error"] = message
         elif out[key] is None:
+        elif key != "market" and out[key] is None:
             out["errors"].append(message)
     return out
 
@@ -402,6 +440,7 @@ with st.expander("⚙️  Data settings — latest published yields & manual ove
             _fred_latest.clear()
             _treasury_latest.clear()
             _website_markets.clear()
+            _direct_market_quote.clear()
             get_live_yields.clear()
     if use_live:
         with st.spinner("Checking Academy markets and official yield sources…"):
@@ -409,6 +448,17 @@ with st.expander("⚙️  Data settings — latest published yields & manual ove
     else:
         live = {"us": None, "us_date": None, "india": None, "india_date": None, "errors": []}
         st.caption("Fetching is off. Reference figures are illustrative; enable manual overrides to edit.")
+
+    # Session state survives refreshes but is isolated per visitor. Keep dates unchanged.
+    if use_live:
+        saved_quotes = st.session_state.get("last_good_market_quotes", {})
+        quotes = live.setdefault("markets", {})
+        for symbol in ("USDINR=X", "BZ=F", "^VIX", "^INDIAVIX"):
+            if symbol in quotes:
+                saved_quotes[symbol] = dict(quotes[symbol])
+            elif symbol in saved_quotes:
+                quotes[symbol] = dict(saved_quotes[symbol], stale=True, retained=True)
+        st.session_state["last_good_market_quotes"] = saved_quotes
 
     us_seed = live["us"] if live.get("us") is not None else DEFAULT_US
     ind_seed = live["india"] if live.get("india") is not None else DEFAULT_IND
@@ -438,6 +488,8 @@ with st.expander("⚙️  Data settings — latest published yields & manual ove
         st.caption(_src(live.get("us"), live.get("us_date"), "DGS10", live.get("us_stale")))
     if live.get("website_error"):
         st.caption("Academy market feed unavailable; market cards show unavailable rather than example prices.")
+        st.caption("Academy feed could not be fully read. Backup quotes or the last successful quotes are used where available.")
+        st.caption(live["website_error"])
     if manual:
         st.info("Manual overrides are ON. Turn them OFF to apply downloaded yields automatically.")
     if use_live and live.get("errors"):
@@ -837,6 +889,7 @@ with tabs[5]:
             status, color = "Stale — verify", AMBER
         return (label, f"{value:.2f}", str(threshold), status, color,
                 "Academy / Yahoo · " + quote["as_of"] + " · delayed or last quote")
+                quote.get("source", "Academy / Yahoo") + " · " + quote["as_of"] + (" · retained after refresh failure" if quote.get("retained") else " · delayed or last quote"))
     us_note = ("Manual override" if manual else
                (f"{live.get('us_source')} · {live.get('us_date')}" if live.get("us") is not None
                 else "Illustrative reference — no fetched US yield"))
@@ -849,6 +902,10 @@ with tabs[5]:
         ("India–US Spread (bps)", f"{SPREAD_BPS}", "200", sp_stat[0], sp_stat[1], "Computed from displayed yields; India may be monthly or reference"),
         ("FII Bond Holdings ($bn)", "—", "25", "Unavailable", MUTED, "Not supplied by Academy markets"),
     ]
+    if live.get("diagnostics"):
+        with st.expander("Market feed connection details", expanded=False):
+            for detail in live["diagnostics"]:
+                st.caption(detail)
     dcols = st.columns(3)
     for i,(ind,cur,thr,stat,c,act) in enumerate(dash):
         with dcols[i%3]:
