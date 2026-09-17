@@ -1,5 +1,6 @@
 
 
+
 # =============================================================================
 # The Mountain Path Academy — India–US 10Y Bond Yield Spread
 # Educational Streamlit App  |  Prof. V. Ravichandran
@@ -983,50 +984,30 @@ with tabs[4]:
 .fed-note{color:#c3cee2;font-size:14px;line-height:1.65;margin:18px 0 0}
 .fed-note b{color:#FFD700}
 @media(max-width:700px){.fed-paths,.fed-choices{grid-template-columns:1fr}.fed-panel{padding:18px}.fed-path{padding:16px}.fed-panel h3{font-size:22px}}
+
+.fed-path.neutral{--accent:#ffe08a;--tint:#373529;border-color:#786b42}
+.fed-path summary{cursor:pointer;color:var(--accent);font-size:18px;font-weight:700;line-height:1.5;min-height:44px}
+.fed-path summary:focus-visible{outline:2px solid #FFD700;outline-offset:5px}
+.fed-path[open] summary{margin-bottom:14px}
+.fed-group{color:#FFD700;font-size:19px;line-height:1.4;margin:26px 0 14px}
+.fed-key{display:flex;flex-wrap:wrap;gap:10px 20px;color:#c3cee2;font-size:14px;margin:0 0 18px}
 </style>
 <section class="fed-panel" aria-labelledby="fed-title">
-<div class="fed-eyebrow">Part 3 · Fed moves &amp; RBI choices</div>
-<h3 id="fed-title">When the Fed changes rates, what can the RBI do?</h3>
-<p class="fed-intro">The RBI does not automatically follow the Fed. US rates can change the pressure on India’s currency and inflation—and the RBI’s room to act.</p>
-<div class="fed-paths">
-<article class="fed-path" aria-labelledby="fed-hike">
-<h4 id="fed-hike">↑ Scenario A · Fed raises rates</h4>
-<p class="fed-sub">Possible path: more pressure on the rupee</p>
-<ol class="fed-steps">
-<li>US bond yields may rise.</li>
-<li>If Indian yields rise less, India’s yield advantage narrows.</li>
-<li>Investors may move money toward US assets.</li>
-<li>The rupee may weaken against the dollar.</li>
-<li>Imports become costlier in rupees, adding inflation pressure.</li>
-</ol>
-<div class="fed-outcome"><strong>RBI: less room to cut</strong>May hold rates—or raise them if Indian inflation requires it.</div>
-</article>
-<article class="fed-path cut" aria-labelledby="fed-cut">
-<h4 id="fed-cut">↓ Scenario B · Fed cuts rates</h4>
-<p class="fed-sub">Possible path: some relief for the rupee</p>
-<ol class="fed-steps">
-<li>US bond yields may fall.</li>
-<li>If Indian yields fall less, India’s yield advantage widens.</li>
-<li>Indian assets may attract more foreign investment.</li>
-<li>The rupee may strengthen or stabilise.</li>
-<li>Pressure from currency-driven import costs may ease.</li>
-</ol>
-<div class="fed-outcome"><strong>RBI: more room to cut</strong>May cut to support growth if Indian inflation allows.</div>
-</article>
-</div>
-<div class="fed-decision">
-<h4>The RBI’s final decision depends on India</h4>
-<div class="fed-choices">
-<div class="fed-choice"><b>Inflation too high?</b>Holding or raising rates may be appropriate.</div>
-<div class="fed-choice"><b>Growth weak, inflation low?</b>A rate cut may be possible—even if the Fed hikes.</div>
-<div class="fed-choice"><b>Rupee under pressure?</b>The RBI may delay cuts and use forex intervention to smooth volatility.</div>
-</div>
-</div>
-<p class="fed-note"><b>If the RBI cuts first:</b> Indian yields may fall relative to US yields, narrowing the spread and increasing currency pressure. This can constrain further cuts; it does not make them impossible.</p>
-<p class="fed-note"><b>Read these as possible paths, not predictions.</b> The spread means India’s bond yield minus the comparable US bond yield. Policy rates and 10-year yields do not move one-for-one. Market expectations, oil prices, currency-hedging costs and global risk sentiment also matter. During a global crisis, money may seek safety in dollars even when the Fed cuts.</p>
-</section>
-""")
-
+<div class="fed-eyebrow">Part 3 · Fed–RBI scenario guide</div>
+<h3 id="fed-title">Different rate decisions. Different paths for India.</h3>
+<p class="fed-intro">The RBI does not automatically follow the Fed. Explore all nine rate combinations, then see how a recession or oil shock can change the outcome. Open any scenario to follow the steps.</p>
+<div class="fed-key"><span style="color:#ffabb3">Red: potential currency pressure</span><span style="color:#8ee4c2">Green: potential currency support</span><span style="color:#ffe08a">Gold: depends on relative moves or other forces</span></div>
+<p class="fed-note"><b>Two different gaps:</b> The policy-rate gap compares central-bank rates. This dashboard’s bond-yield spread compares Indian and US 10-year government bond yields. They can move differently. “Widens” means India’s rate minus the US rate increases; it does not guarantee a positive gap.</p>
+<h4 class="fed-group">01–09 · Rate combinations</h4><div class="fed-paths">
+<details class="fed-path " open><summary>01 · Fed raises · RBI holds</summary><p class="fed-sub">US tightens while India waits</p><ol class="fed-steps"><li>US policy rate rises; India’s policy rate stays unchanged.</li><li>India’s policy-rate advantage narrows. If bond yields follow, its bond-yield advantage narrows too.</li><li>Outflow pressure may increase → rupee may weaken → imported inflation pressure may rise.</li></ol><div class="fed-outcome"><strong>Less room for future RBI cuts</strong>The RBI may continue to hold or raise rates if Indian inflation requires it.</div></details><details class="fed-path cut" open><summary>02 · Fed cuts · RBI holds</summary><p class="fed-sub">US eases while India waits</p><ol class="fed-steps"><li>US policy rate falls; India’s policy rate stays unchanged.</li><li>India’s policy-rate advantage widens. If bond yields follow, Indian bonds may become relatively more attractive.</li><li>Inflows may support the rupee → currency-driven import-cost pressure may ease.</li></ol><div class="fed-outcome"><strong>More room for a later RBI cut</strong>The RBI may cut if Indian inflation allows and growth needs support.</div></details><details class="fed-path "><summary>03 · Fed raises · RBI cuts</summary><p class="fed-sub">Policies move in opposite directions</p><ol class="fed-steps"><li>US policy rate rises while India’s policy rate falls.</li><li>India’s policy-rate advantage narrows from both sides; bond yields may also move closer.</li><li>Currency and outflow pressure may increase, complicating India’s inflation outlook.</li></ol><div class="fed-outcome"><strong>A harder growth–inflation trade-off</strong>An RBI cut can support weak growth, but currency pressure may constrain further easing.</div></details><details class="fed-path cut"><summary>04 · Fed cuts · RBI raises</summary><p class="fed-sub">India tightens while the US eases</p><ol class="fed-steps"><li>US policy rate falls while India’s policy rate rises.</li><li>India’s policy-rate advantage widens from both sides; this may support demand for Indian assets.</li><li>The rupee may gain support, while higher Indian borrowing costs restrain domestic demand.</li></ol><div class="fed-outcome"><strong>Indian inflation takes priority</strong>The RBI may still raise rates when domestic inflation is too high.</div></details><details class="fed-path neutral"><summary>05 · Fed raises · RBI raises</summary><p class="fed-sub">Both tighten: compare the size of the hikes</p><ol class="fed-steps"><li>Both central banks raise their policy rates.</li><li>RBI hikes more → policy gap widens. Fed hikes more → gap narrows. Equal hikes → gap unchanged.</li><li>Capital flows and the rupee depend on bond yields, expectations and risk—not simply on both banks hiking.</li></ol><div class="fed-outcome"><strong>Following is not automatic</strong>The RBI’s hike should be understood through India’s inflation and growth conditions.</div></details><details class="fed-path neutral"><summary>06 · Fed cuts · RBI cuts</summary><p class="fed-sub">Both ease: compare the size of the cuts</p><ol class="fed-steps"><li>Both central banks lower their policy rates.</li><li>Fed cuts more → policy gap widens. RBI cuts more → gap narrows. Equal cuts → gap unchanged.</li><li>Lower Indian borrowing costs may support growth; the currency effect depends on relative yields and risk.</li></ol><div class="fed-outcome"><strong>The size of each cut matters</strong>Both banks cutting does not by itself tell us whether India’s yield spread will widen or narrow.</div></details><details class="fed-path "><summary>07 · Fed holds · RBI cuts</summary><p class="fed-sub">India eases on its own</p><ol class="fed-steps"><li>US policy rate is unchanged; India’s policy rate falls.</li><li>India’s policy-rate advantage narrows; Indian bond yields may fall relative to US yields.</li><li>Growth may benefit, but outflow and rupee pressure may increase.</li></ol><div class="fed-outcome"><strong>Further cuts may become harder</strong>The RBI weighs growth support against inflation and currency pressures.</div></details><details class="fed-path cut"><summary>08 · Fed holds · RBI raises</summary><p class="fed-sub">India tightens on its own</p><ol class="fed-steps"><li>US policy rate is unchanged; India’s policy rate rises.</li><li>India’s policy-rate advantage widens, potentially supporting demand for rupee assets.</li><li>The rupee may gain support; higher borrowing costs may slow spending and investment.</li></ol><div class="fed-outcome"><strong>Inflation control has a growth cost</strong>The RBI may choose this path when Indian inflation needs restraint.</div></details><details class="fed-path neutral"><summary>09 · Fed holds · RBI holds</summary><p class="fed-sub">Policy rates pause; markets can still move</p><ol class="fed-steps"><li>Neither central bank changes its policy rate.</li><li>The policy-rate gap stays unchanged, but 10-year bond yields can still change.</li><li>Inflation news, oil prices, government borrowing and global risk can move the spread and the rupee.</li></ol><div class="fed-outcome"><strong>A pause is not a market freeze</strong>The RBI watches incoming data before deciding its next move.</div></details></div>
+<h4 class="fed-group">10–11 · Shocks that can change the story</h4><div class="fed-paths"><details class="fed-path neutral"><summary>10 · Fed cuts during a global recession</summary><p class="fed-sub">A rate cut can coexist with a weaker rupee</p><ol class="fed-steps"><li>The Fed cuts as the global outlook deteriorates.</li><li>Investors may seek safety in dollars and reduce exposure to emerging markets.</li><li>Money may leave India → rupee may weaken, even as US policy rates fall.</li></ol><div class="fed-outcome"><strong>Relief is not guaranteed</strong>The RBI balances weaker growth against currency and inflation pressures.</div></details><details class="fed-path "><summary>11 · Oil prices jump · any Fed decision</summary><p class="fed-sub">An external shock can outweigh rate relief</p><ol class="fed-steps"><li>India’s dollar cost of oil imports rises, other things equal.</li><li>A larger import bill may pressure the rupee; higher energy costs can add to inflation.</li><li>Even a Fed cut may provide too little relief to offset the oil shock.</li></ol><div class="fed-outcome"><strong>RBI may have less room to ease</strong>Its response depends on how persistent the shock is and how widely it lifts prices.</div></details></div>
+<div class="fed-decision"><h4>What ultimately guides the RBI?</h4><div class="fed-choices">
+<div class="fed-choice"><b>Indian inflation</b>High or persistent inflation can favour holding or raising rates.</div>
+<div class="fed-choice"><b>Indian growth</b>Weak growth with contained inflation can create room for a cut.</div>
+<div class="fed-choice"><b>Currency &amp; financial conditions</b>Rupee pressure may constrain easing. Forex intervention can help smooth volatility.</div>
+</div></div>
+<p class="fed-note"><b>Possible paths, not predictions.</b> Market expectations, hedging costs, risk appetite and the size of each move matter. A decision already priced in may have little immediate effect. Green means potential currency support—not that higher rates are better for the whole economy.</p>
+</section>""")
     html(f"""
     <div class="mp-card" style="border-color:rgba(40,167,69,.45);">
       <div style="color:{GRN};-webkit-text-fill-color:{GRN};font-weight:700;font-size:15px;">
