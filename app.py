@@ -889,7 +889,15 @@ with tabs[5]:
             status, color = "Stale — verify", AMBER
         return (label, f"{value:.2f}", str(threshold), status, color,
                 "Academy / Yahoo · " + quote["as_of"] + " · delayed or last quote")
-                quote.get("source", "Academy / Yahoo") + " · " + quote["as_of"] + (" · retained after refresh failure" if quote.get("retained") else " · delayed or last quote"))
+        source = quote.get("source", "Academy / Yahoo")
+        as_of = quote["as_of"]
+        if quote.get("retained"):
+            freshness = "retained after refresh failure"
+        else:
+            freshness = "delayed or last quote"
+        note = f"{source} · {as_of} · {freshness}"
+        return label, f"{value:.2f}", str(threshold), status, color, note
+
     us_note = ("Manual override" if manual else
                (f"{live.get('us_source')} · {live.get('us_date')}" if live.get("us") is not None
                 else "Illustrative reference — no fetched US yield"))
