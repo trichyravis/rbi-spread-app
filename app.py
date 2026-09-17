@@ -6,6 +6,7 @@
 # https://themountainpathacademy.com
 # =============================================================================
 import io
+import json
 import random
 import math
 import time
@@ -193,20 +194,69 @@ def _direct_market_quote(symbol):
     quote["source"] = "Yahoo backup"
     return quote
 
+def _backup_attempt(symbol, cooldowns):
+    cached = cooldowns.get(symbol)
+    if cached is not None and time.monotonic() < cached[0]:
+        return cached[1], cached[2]
+    try:
+        result, error = _direct_market_quote(symbol), None
+        duration = 120
+    except Exception as exception:
+        result, duration = None, 900
+        if _HAS_REQUESTS and isinstance(exception, requests.HTTPError) and exception.response is not None and exception.response.status_code == 429:
+            error = f"{symbol}: Yahoo rate limit reached; backup paused for 15 minutes"
+        else:
+            error = f"{symbol}: backup unavailable ({type(exception).__name__}); retry after cooldown"
+    cooldowns[symbol] = (time.monotonic() + duration, result, error)
+    return result, error
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _ccil_far_holdings():
+    """CCIL's indicative FPI holdings in FAR G-Secs, in INR crore."""
+    if not _HAS_REQUESTS:
+        raise RuntimeError("requests unavailable")
+    params = {"p_p_id": "FPI_FPIPortlet_INSTANCE_rkvf", "p_p_lifecycle": "2",
+              "p_p_state": "normal", "p_p_mode": "view", "p_p_resource_id": "FPI",
+              "p_p_cacheability": "cacheLevelPage"}
+    with requests.Session() as session:
+        response = session.post("https://www.ccilindia.com/fpi-home-page", params=params,
+                                data={}, timeout=(3, 7),
+                                headers={"User-Agent": _BROWSER_UA, "Accept": "application/json"})
+        response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("result1")
+    if isinstance(rows, str):
+        rows = json.loads(rows)
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("CCIL FAR holdings table is unavailable")
+    total, seen = 0.0, set()
+    for row in rows:
+        isin = row.get("dfar_ismt_scnd_desc")
+        if not isin or isin in seen:
+            raise ValueError("CCIL FAR table contains missing or duplicate ISINs")
+        seen.add(isin)
+        value = float(row["dfar_totl_util_qnty"])
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("CCIL FAR table contains invalid holdings")
+        total += value
+    # This response supplies no observation date; do not invent one.
+    return {"value": total, "retrieved_at": pd.Timestamp.now(tz="Asia/Kolkata").strftime("%d %b %Y %H:%M IST"),
+            "stale": False, "securities": len(rows)}
+
 @st.cache_data(ttl=60, show_spinner=False)
-def get_live_yields():
+def get_live_yields(fetch_india=False, _cooldowns=None):
     # Independent US sources run together; use the newest completed observation.
     out = {"us": None, "us_date": None, "us_source": None, "us_stale": False,
-           "india": None, "india_date": None, "india_stale": False, "errors": [], "diagnostics": [], "markets": {}, "website_error": None}
-    pool = ThreadPoolExecutor(max_workers=7)
+           "india": None, "india_date": None, "india_stale": False, "errors": [], "diagnostics": [], "markets": {}, "website_error": None, "fpi_holdings": None}
+    pool = ThreadPoolExecutor(max_workers=5)
     jobs = {
+        pool.submit(_ccil_far_holdings): ("fpi", "CCIL FAR holdings", 4),
         pool.submit(_website_markets): ("website", "Academy markets feed", 4),
         pool.submit(_fred_latest, "DGS10"): ("us", "FRED DGS10", 10),
         pool.submit(_treasury_latest): ("us", "US Treasury nominal 10Y par yield", 10),
-        pool.submit(_fred_latest, "INDIRLTLT01STM"): ("india", "FRED INDIRLTLT01STM", 100),
     }
-    for symbol in ("USDINR=X", "BZ=F", "^VIX"):
-        jobs[pool.submit(_direct_market_quote, symbol)] = ("market", symbol, 4)
+    if fetch_india:
+        jobs[pool.submit(_fred_latest, "INDIRLTLT01STM")] = ("india", "FRED INDIRLTLT01STM", 100)
     done, pending = set(), set(jobs)
     deadline = time.monotonic() + 10
     while pending:
@@ -214,10 +264,10 @@ def get_live_yields():
                                  return_when=FIRST_COMPLETED)
         done.update(finished)
         website_future = next(f for f in jobs if jobs[f][0] == "website")
-        india_future = next(f for f in jobs if jobs[f][0] == "india")
+        india_future = next((f for f in jobs if jobs[f][0] == "india"), None)
         website_ready = False
         website_finished = website_future in done
-        india_finished = india_future in done
+        india_finished = india_future is None or india_future in done
         if website_finished and india_finished:
             try:
                 website_payload = website_future.result()
@@ -226,7 +276,8 @@ def get_live_yields():
                 website_ready = all(quotes)
             except Exception:
                 website_ready = False
-        if website_ready:
+        fpi_future = next(f for f in jobs if jobs[f][0] == "fpi")
+        if website_ready and fpi_future in done:
             break
         if not finished or time.monotonic() >= deadline:
             break
@@ -234,12 +285,11 @@ def get_live_yields():
     failures = []
     candidates = []
     website_us_stale = False
-    backup_quotes = {}
     for future in done:
         key, source, max_age = jobs[future]
         try:
-            if key == "market":
-                backup_quotes[source] = future.result()
+            if key == "fpi":
+                out["fpi_holdings"] = future.result()
                 continue
             if key == "website":
                 payload = future.result()
@@ -268,20 +318,37 @@ def get_live_yields():
         key, source, _ = jobs[future]
         future.cancel()
         failures.append((key, f"{source}: exceeded the 10-second wait limit"))
-    for symbol, quote in backup_quotes.items():
-        current = out["markets"].get(symbol)
-        if current is None or (current["stale"] and not quote["stale"]):
-            out["markets"][symbol] = quote
+    # Use direct Yahoo only for missing quotes, never on every website refresh.
+    missing = [symbol for symbol in ("USDINR=X", "BZ=F", "^VIX")
+               if symbol not in out["markets"]]
+    if missing:
+        cooldowns = _cooldowns if _cooldowns is not None else {}
+        backup_pool = ThreadPoolExecutor(max_workers=len(missing))
+        backup_jobs = {backup_pool.submit(_backup_attempt, symbol, cooldowns): symbol for symbol in missing}
+        completed, unfinished = wait(backup_jobs, timeout=5)
+        backup_pool.shutdown(wait=False, cancel_futures=True)
+        for future in completed:
+            symbol = backup_jobs[future]
+            quote, error = future.result()
+            if quote is not None:
+                out["markets"][symbol] = quote
+            if error:
+                failures.append(("market", error))
+        for future in unfinished:
+            future.cancel()
+            failures.append(("market", f"{backup_jobs[future]}: backup wait limit reached"))
     if candidates:
         date, _, value, source = max(candidates)
         out["us"], out["us_date"], out["us_source"] = value, date, source
         age = _age_days(date)
         out["us_stale"] = (age is not None and age > 10) or (source.startswith("Academy") and website_us_stale)
     for key, message in failures:
+        if key == "us" and out["us"] is not None:
+            continue  # A successful US source makes redundant-source failures non-actionable.
         out["diagnostics"].append(message)
         if key == "website":
             out["website_error"] = message
-        elif key != "market" and out[key] is None:
+        elif key not in ("market", "fpi") and out[key] is None:
             out["errors"].append(message)
     return out
 
@@ -435,6 +502,9 @@ with st.expander("⚙️  Data settings — latest published yields & manual ove
                              help="Academy markets, US Treasury and FRED provide daily yield observations, "
                                   "not intraday quotes. India is monthly. "
                                   "Successful downloads are cached for one hour.")
+        fetch_india = st.toggle("Fetch monthly India OECD yield", value=False,
+                                help="Optional monthly feed; it is not today's RBI 10Y benchmark. "
+                                     "Leave off for faster loading; use manual yields for a current India rate.")
         manual = st.toggle("Use manual yield overrides", value=False,
                            help="Enable to edit yields. Disable to apply the latest fetched values.")
     with btn_col:
@@ -443,11 +513,12 @@ with st.expander("⚙️  Data settings — latest published yields & manual ove
             _fred_latest.clear()
             _treasury_latest.clear()
             _website_markets.clear()
-            _direct_market_quote.clear()
+            # Preserve Yahoo cooldown even when Refresh is clicked.
+            _ccil_far_holdings.clear()
             get_live_yields.clear()
     if use_live:
         with st.spinner("Checking Academy markets and official yield sources…"):
-            live = get_live_yields()
+            live = get_live_yields(fetch_india, st.session_state.setdefault("yahoo_backup_cooldowns", {}))
     else:
         live = {"us": None, "us_date": None, "india": None, "india_date": None, "errors": []}
         st.caption("Fetching is off. Reference figures are illustrative; enable manual overrides to edit.")
@@ -462,6 +533,10 @@ with st.expander("⚙️  Data settings — latest published yields & manual ove
             elif symbol in saved_quotes:
                 quotes[symbol] = dict(saved_quotes[symbol], stale=True, retained=True)
         st.session_state["last_good_market_quotes"] = saved_quotes
+        if live.get("fpi_holdings") is not None:
+            st.session_state["last_good_fpi_holdings"] = dict(live["fpi_holdings"])
+        elif st.session_state.get("last_good_fpi_holdings") is not None:
+            live["fpi_holdings"] = dict(st.session_state["last_good_fpi_holdings"], stale=True)
 
     us_seed = live["us"] if live.get("us") is not None else DEFAULT_US
     ind_seed = live["india"] if live.get("india") is not None else DEFAULT_IND
@@ -499,6 +574,8 @@ with st.expander("⚙️  Data settings — latest published yields & manual ove
                    "unless manual overrides are enabled.")
         for error in live["errors"]:
             st.caption(error)
+    if use_live and not fetch_india:
+        st.caption("India monthly feed is off. The India yield is an illustrative reference unless manually overridden.")
     if use_live and live.get("india") is not None:
         st.caption("India's OECD feed is monthly and can lag; use a manual override for today's G-Sec yield.")
 
@@ -901,6 +978,17 @@ with tabs[5]:
     us_note = ("Manual override" if manual else
                (f"{live.get('us_source')} · {live.get('us_date')}" if live.get("us") is not None
                 else "Illustrative reference — no fetched US yield"))
+    holdings = live.get("fpi_holdings")
+    if holdings is None:
+        fpi_card = ("FPI G-Sec holdings — FAR (₹ cr)", "—", "N/A", "Unavailable", MUTED,
+                    "CCIL holdings feed unavailable")
+    else:
+        fpi_status = "Last successful fetch" if holdings["stale"] else "Reported holdings"
+        fpi_card = ("FPI G-Sec holdings — FAR (₹ cr)", f"{holdings['value']:,.2f}", "N/A", fpi_status,
+                    AMBER if holdings["stale"] else LB,
+                    "CCIL · retrieved " + holdings["retrieved_at"] + " · source observation date not supplied")
+    st.caption("FPI holdings: CCIL indicative FAR government-bond holdings only, in ₹ crore; "
+               "excludes general-route, corporate and state bonds. Retrieval time is shown because the feed supplies no observation date.")
     dash = [
         ("US 10Y Treasury", f"{USY:.2f}%", "4.75%", us_stat[0] if manual or live.get("us") is not None else "Reference",
          us_stat[1] if manual or live.get("us") is not None else MUTED, us_note),
@@ -908,7 +996,7 @@ with tabs[5]:
         market_card("US VIX Index", "^VIX", 25, 18),
         market_card("USD/INR", "USDINR=X", 86, 85),
         ("India–US Spread (bps)", f"{SPREAD_BPS}", "200", sp_stat[0], sp_stat[1], "Computed from displayed yields; India may be monthly or reference"),
-        ("FII Bond Holdings ($bn)", "—", "25", "Unavailable", MUTED, "Not supplied by Academy markets"),
+        fpi_card,
     ]
     if live.get("diagnostics"):
         with st.expander("Market feed connection details", expanded=False):
