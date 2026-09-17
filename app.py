@@ -9,6 +9,7 @@
 import io
 import random
 import math
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, wait
 import streamlit as st
 import pandas as pd
@@ -71,7 +72,7 @@ def _fred_latest(series_id: str):
     start = (pd.Timestamp.now() - pd.Timedelta(days=730)).strftime("%Y-%m-%d")
     with requests.Session() as session:
         r = session.get("https://fred.stlouisfed.org/graph/fredgraph.csv",
-                        params={"id": series_id, "cosd": start}, timeout=(2, 3),
+                        params={"id": series_id, "cosd": start}, timeout=(3, 7),
                         headers={"User-Agent": _BROWSER_UA, "Accept": "text/csv,*/*"})
         r.raise_for_status()
     df = pd.read_csv(io.StringIO(r.text))
@@ -96,32 +97,79 @@ def _age_days(date_str):
     except Exception:
         return None
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _treasury_latest():
+    """Official nominal 10-year par yield; no API key or extra dependency."""
+    if not _HAS_REQUESTS:
+        raise RuntimeError("requests unavailable")
+    # Include the previous year for the New Year holiday publication gap.
+    observations = []
+    today = pd.Timestamp.now().normalize()
+    years = [today.year] if today.month != 1 else [today.year, today.year - 1]
+    for year in years:
+        with requests.Session() as session:
+            r = session.get(
+                "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml",
+                params={"data": "daily_treasury_yield_curve", "field_tdr_date_value": str(year)},
+                timeout=(3, 7), headers={"User-Agent": _BROWSER_UA, "Accept": "application/xml"})
+            r.raise_for_status()
+        root = ET.fromstring(r.content)
+        for properties in root.findall(".//{*}properties"):
+            date_node = properties.find("{*}NEW_DATE")
+            value_node = properties.find("{*}BC_10YEAR")
+            if date_node is None or value_node is None:
+                continue
+            date = pd.to_datetime(date_node.text, errors="coerce")
+            value = pd.to_numeric(value_node.text, errors="coerce")
+            if pd.notna(date) and pd.notna(value) and math.isfinite(float(value)) and date.normalize() <= today:
+                observations.append((date, float(value)))
+        if observations:
+            break
+    if not observations:
+        raise ValueError("Treasury feed has no valid nominal 10-year observations")
+    date, value = max(observations, key=lambda observation: observation[0])
+    return round(value, 2), date.strftime("%Y-%m-%d")
+
 @st.cache_data(ttl=60, show_spinner=False)
 def get_live_yields():
-    # Briefly cache combined results, including failures, to avoid repeated waits
-    # when a slider changes. Successful individual observations are cached for 1h.
-    out = {"us": None, "us_date": None, "us_stale": False,
-           "india": None, "india_date": None, "india_stale": False, "errors": []}
-    pool = ThreadPoolExecutor(max_workers=2)
-    jobs = {pool.submit(_fred_latest, sid): (key, sid, max_age)
-            for key, sid, max_age in (("us", "DGS10", 10), ("india", "INDIRLTLT01STM", 100))}
-    done, pending = wait(jobs, timeout=6)
-    # Do not wait for a stalled request at executor shutdown (e.g. slow DNS).
+    # Independent US sources run together; use the newest completed observation.
+    out = {"us": None, "us_date": None, "us_source": None, "us_stale": False,
+           "india": None, "india_date": None, "india_stale": False, "errors": [], "diagnostics": []}
+    pool = ThreadPoolExecutor(max_workers=3)
+    jobs = {
+        pool.submit(_fred_latest, "DGS10"): ("us", "FRED DGS10", 10),
+        pool.submit(_treasury_latest): ("us", "US Treasury nominal 10Y par yield", 10),
+        pool.submit(_fred_latest, "INDIRLTLT01STM"): ("india", "FRED INDIRLTLT01STM", 100),
+    }
+    done, pending = wait(jobs, timeout=10)
     pool.shutdown(wait=False, cancel_futures=True)
+    failures = []
+    candidates = []
     for future in done:
-        key, sid, max_age = jobs[future]
+        key, source, max_age = jobs[future]
         try:
-            res = future.result()
-            if res:
-                out[key], out[f"{key}_date"] = res
-                age = _age_days(out[f"{key}_date"])
-                out[f"{key}_stale"] = (age is not None and age > max_age)
+            value, date = future.result()
+            if key == "us":
+                candidates.append((date, source.startswith("US Treasury"), value, source))
+            else:
+                out[key], out[f"{key}_date"] = value, date
+                age = _age_days(date)
+                out[f"{key}_stale"] = age is not None and age > max_age
         except Exception as e:
-            out["errors"].append(f"{key.upper()} ({sid}): {type(e).__name__}: {e}")
+            failures.append((key, f"{source}: {type(e).__name__}: {e}"))
     for future in pending:
-        key, sid, _ = jobs[future]
+        key, source, _ = jobs[future]
         future.cancel()
-        out["errors"].append(f"{key.upper()} ({sid}): feed exceeded the 6-second wait limit")
+        failures.append((key, f"{source}: exceeded the 10-second wait limit"))
+    if candidates:
+        date, _, value, source = max(candidates)
+        out["us"], out["us_date"], out["us_source"] = value, date, source
+        age = _age_days(date)
+        out["us_stale"] = age is not None and age > 10
+    for key, message in failures:
+        out["diagnostics"].append(message)
+        if out[key] is None:
+            out["errors"].append(message)
     return out
 
 # -----------------------------------------------------------------------------
@@ -270,8 +318,9 @@ def _think_card():
 with st.expander("⚙️  Data settings — latest published yields & manual override", expanded=False):
     tog_col, btn_col = st.columns([3, 1])
     with tog_col:
-        use_live = st.toggle("Fetch latest yields from FRED", value=True,
-                             help="US DGS10 is daily, not an intraday quote. India is monthly. "
+        use_live = st.toggle("Fetch latest published yields", value=True,
+                             help="US Treasury and FRED are checked independently. These are daily observations, "
+                                  "not intraday quotes. India is monthly. "
                                   "Successful downloads are cached for one hour.")
         manual = st.toggle("Use manual yield overrides", value=False,
                            help="Enable to edit yields. Disable to apply the latest fetched values.")
@@ -279,9 +328,10 @@ with st.expander("⚙️  Data settings — latest published yields & manual ove
         if st.button("↻ Refresh", disabled=not use_live,
                      help="Download latest observations; manual overrides remain in effect"):
             _fred_latest.clear()
+            _treasury_latest.clear()
             get_live_yields.clear()
     if use_live:
-        with st.spinner("Fetching latest published yields from FRED…"):
+        with st.spinner("Checking US Treasury and FRED for published yields…"):
             live = get_live_yields()
     else:
         live = {"us": None, "us_date": None, "india": None, "india_date": None, "errors": []}
@@ -296,11 +346,12 @@ with st.expander("⚙️  Data settings — latest published yields & manual ove
 
     def _src(val, date, sid, stale):
         if manual:
-            return "Manual override — used in all calculations"
+            return "Manual override — used in all calculations" + (f" · fetched {val:.2f}% as of {date}" if val is not None else " · automatic feed unavailable")
         if val is None:
             return "Illustrative reference figure — " + ("feed unavailable" if use_live else "fetching off")
         status = "Lagged observation — verify/override" if stale else "Latest published observation"
-        return f"{status} · FRED {sid} · as of {date}"
+        source = live.get("us_source") if sid == "DGS10" else f"FRED {sid}"
+        return f"{status} · {source} · as of {date}"
 
     cset = st.columns(2)
     with cset[0]:
@@ -312,6 +363,8 @@ with st.expander("⚙️  Data settings — latest published yields & manual ove
         USY = st.number_input("US 10Y yield (%)", step=0.01, format="%.2f",
                               key="us_yield", disabled=not manual)
         st.caption(_src(live.get("us"), live.get("us_date"), "DGS10", live.get("us_stale")))
+    if manual:
+        st.info("Manual overrides are ON. Turn them OFF to apply downloaded yields automatically.")
     if use_live and live.get("errors"):
         st.warning("Some feeds could not be loaded. Illustrative reference figures are used "
                    "unless manual overrides are enabled.")
@@ -342,7 +395,7 @@ tabs = st.tabs([
 with tabs[0]:
     if IS_LIVE:
         badge = f"<span style='color:{GRN};-webkit-text-fill-color:{GRN};font-size:11px;'>● latest published US yield</span>"
-        tail = f"US DGS10 as of {live.get('us_date')} · India source shown in Data settings · spread may mix observation dates"
+        tail = f"{live.get('us_source')} as of {live.get('us_date')} · India source shown in Data settings · spread may mix observation dates"
     else:
         badge = f"<span style='color:{AMBER};-webkit-text-fill-color:{AMBER};font-size:11px;'>reference</span>"
         tail = "manual overrides in effect" if manual else "reference or lagged values · check Data settings"
