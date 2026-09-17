@@ -1,6 +1,5 @@
 
 
-
 # =============================================================================
 # The Mountain Path Academy — India–US 10Y Bond Yield Spread
 # Educational Streamlit App  |  Prof. V. Ravichandran
@@ -199,7 +198,6 @@ def get_live_yields():
     # Independent US sources run together; use the newest completed observation.
     out = {"us": None, "us_date": None, "us_source": None, "us_stale": False,
            "india": None, "india_date": None, "india_stale": False, "errors": [], "diagnostics": [], "markets": {}, "website_error": None}
-    pool = ThreadPoolExecutor(max_workers=4)
     pool = ThreadPoolExecutor(max_workers=7)
     jobs = {
         pool.submit(_website_markets): ("website", "Academy markets feed", 4),
@@ -217,13 +215,19 @@ def get_live_yields():
         done.update(finished)
         website_future = next(f for f in jobs if jobs[f][0] == "website")
         india_future = next(f for f in jobs if jobs[f][0] == "india")
-        if website_future in done and india_future in done:
+        website_ready = False
+        website_finished = website_future in done
+        india_finished = india_future in done
+        if website_finished and india_finished:
             try:
-                if _website_quote(website_future.result(), "^TNX"):
-                if all(_website_quote(website_future.result(), symbol) for symbol in ("^TNX", "USDINR=X", "BZ=F", "^VIX")):
-                    break  # Working website feed avoids waiting for slow direct US sources.
+                website_payload = website_future.result()
+                required_symbols = ("^TNX", "USDINR=X", "BZ=F", "^VIX")
+                quotes = [_website_quote(website_payload, symbol) for symbol in required_symbols]
+                website_ready = all(quotes)
             except Exception:
-                pass
+                website_ready = False
+        if website_ready:
+            break
         if not finished or time.monotonic() >= deadline:
             break
     pool.shutdown(wait=False, cancel_futures=True)
@@ -277,7 +281,6 @@ def get_live_yields():
         out["diagnostics"].append(message)
         if key == "website":
             out["website_error"] = message
-        elif out[key] is None:
         elif key != "market" and out[key] is None:
             out["errors"].append(message)
     return out
@@ -487,7 +490,6 @@ with st.expander("⚙️  Data settings — latest published yields & manual ove
                               key="us_yield", disabled=not manual)
         st.caption(_src(live.get("us"), live.get("us_date"), "DGS10", live.get("us_stale")))
     if live.get("website_error"):
-        st.caption("Academy market feed unavailable; market cards show unavailable rather than example prices.")
         st.caption("Academy feed could not be fully read. Backup quotes or the last successful quotes are used where available.")
         st.caption(live["website_error"])
     if manual:
@@ -887,8 +889,6 @@ with tabs[5]:
         status, color = ("Critical", RED) if value >= threshold else (("Watch", AMBER) if value >= watch else ("Safe", GRN))
         if quote["stale"]:
             status, color = "Stale — verify", AMBER
-        return (label, f"{value:.2f}", str(threshold), status, color,
-                "Academy / Yahoo · " + quote["as_of"] + " · delayed or last quote")
         source = quote.get("source", "Academy / Yahoo")
         as_of = quote["as_of"]
         if quote.get("retained"):
