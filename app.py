@@ -9,6 +9,7 @@
 import io
 import random
 import math
+from concurrent.futures import ThreadPoolExecutor, wait
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -66,17 +67,11 @@ def _fred_latest(series_id: str):
     Raises on failure so the failure is NOT cached (Streamlit re-tries next run)."""
     if not _HAS_REQUESTS:
         raise RuntimeError("requests unavailable")
-    # Fetch a bounded window; retry transient rate limits/server failures.
-    from requests.adapters import HTTPAdapter
-    from urllib3.util.retry import Retry
+    # One attempt per refresh; short timeouts avoid long retry delays.
     start = (pd.Timestamp.now() - pd.Timedelta(days=730)).strftime("%Y-%m-%d")
     with requests.Session() as session:
-        session.mount("https://", HTTPAdapter(max_retries=Retry(
-            total=2, backoff_factor=0.5,
-            status_forcelist=(429, 500, 502, 503, 504),
-            allowed_methods=("GET",), respect_retry_after_header=False)))
         r = session.get("https://fred.stlouisfed.org/graph/fredgraph.csv",
-                        params={"id": series_id, "cosd": start}, timeout=(5, 15),
+                        params={"id": series_id, "cosd": start}, timeout=(2, 3),
                         headers={"User-Agent": _BROWSER_UA, "Accept": "text/csv,*/*"})
         r.raise_for_status()
     df = pd.read_csv(io.StringIO(r.text))
@@ -101,21 +96,32 @@ def _age_days(date_str):
     except Exception:
         return None
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_live_yields():
-    # Not cached here: successful values are cached inside _fred_latest (1h);
-    # failures raise there (uncached) so a cold-start timeout retries next run
-    # instead of pinning "reference" for an hour.
+    # Briefly cache combined results, including failures, to avoid repeated waits
+    # when a slider changes. Successful individual observations are cached for 1h.
     out = {"us": None, "us_date": None, "us_stale": False,
            "india": None, "india_date": None, "india_stale": False, "errors": []}
-    for key, sid, max_age in (("us", "DGS10", 10), ("india", "INDIRLTLT01STM", 100)):
+    pool = ThreadPoolExecutor(max_workers=2)
+    jobs = {pool.submit(_fred_latest, sid): (key, sid, max_age)
+            for key, sid, max_age in (("us", "DGS10", 10), ("india", "INDIRLTLT01STM", 100))}
+    done, pending = wait(jobs, timeout=6)
+    # Do not wait for a stalled request at executor shutdown (e.g. slow DNS).
+    pool.shutdown(wait=False, cancel_futures=True)
+    for future in done:
+        key, sid, max_age = jobs[future]
         try:
-            res = _fred_latest(sid)
+            res = future.result()
             if res:
                 out[key], out[f"{key}_date"] = res
                 age = _age_days(out[f"{key}_date"])
                 out[f"{key}_stale"] = (age is not None and age > max_age)
-        except Exception as e:  # network off, cloud restriction, format change
+        except Exception as e:
             out["errors"].append(f"{key.upper()} ({sid}): {type(e).__name__}: {e}")
+    for future in pending:
+        key, sid, _ = jobs[future]
+        future.cancel()
+        out["errors"].append(f"{key.upper()} ({sid}): feed exceeded the 6-second wait limit")
     return out
 
 # -----------------------------------------------------------------------------
@@ -273,6 +279,7 @@ with st.expander("⚙️  Data settings — latest published yields & manual ove
         if st.button("↻ Refresh", disabled=not use_live,
                      help="Download latest observations; manual overrides remain in effect"):
             _fred_latest.clear()
+            get_live_yields.clear()
     if use_live:
         with st.spinner("Fetching latest published yields from FRED…"):
             live = get_live_yields()
