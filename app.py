@@ -352,6 +352,69 @@ def get_live_yields(fetch_india=False, _cooldowns=None):
             out["errors"].append(message)
     return out
 
+def market_summary(live, india_yield, us_yield, spread_bps, manual):
+    """Describe dashboard inputs without treating examples or stale quotes as live signals."""
+    scores = []
+    us_valid = not manual and live.get("us") is not None and not live.get("us_stale")
+    if manual:
+        us_text = f"US 10Y is {us_yield:.2f}% (manual input)."
+    elif live.get("us") is None:
+        us_text = f"US 10Y is {us_yield:.2f}% (illustrative reference; feed unavailable or off)."
+    else:
+        freshness = "lagged observation" if live.get("us_stale") else "published daily observation"
+        us_text = f"US 10Y is {us_yield:.2f}% ({freshness}, as of {live.get('us_date')})."
+    if us_valid:
+        scores.append(2 if us_yield >= 4.75 else (1 if us_yield >= 4.55 else 0))
+        us_text += " It is " + ("above" if us_yield >= 4.75 else "below") + " the dashboard's 4.75% teaching threshold."
+
+    def describe_market(symbol, name, unit, critical, watch):
+        quote = live.get("markets", {}).get(symbol)
+        if quote is None:
+            return f"{name} is unavailable."
+        value = quote["value"]
+        text = f"{name} is {unit}{value:.2f}, quoted {quote['as_of']}."
+        if quote.get("stale") or quote.get("retained"):
+            return text + " This is a stale or retained quote; it is excluded from the current signal count."
+        score = 2 if value >= critical else (1 if value >= watch else 0)
+        scores.append(score)
+        status = ("above the critical teaching level" if score == 2 else
+                  "in the watch band" if score == 1 else "below the watch band")
+        return text + f" It is {status}; watch {watch:g}, critical {critical:g}."
+
+    brent_text = describe_market("BZ=F", "Brent futures", "$", 90, 85)
+    vix_text = describe_market("^VIX", "US VIX", "", 25, 18)
+    inr_text = describe_market("USDINR=X", "USD/INR", "₹", 86, 85)
+    if manual:
+        india_source = "manual input"
+    elif live.get("india") is None:
+        india_source = "illustrative reference"
+    else:
+        india_source = f"monthly OECD observation as of {live.get('india_date')}"
+    spread_text = (f"The India–US spread is {spread_bps} bps using India {india_yield:.2f}% "
+                   f"({india_source}) and the displayed US yield. ")
+    if manual or not us_valid or live.get("india") is None or live.get("india_stale"):
+        spread_text += "This is an input-based calculation, not a verified current market spread."
+    else:
+        spread_text += "The two observations have different frequencies and may have different dates."
+    holdings = live.get("fpi_holdings")
+    if holdings is None:
+        holdings_text = "FPI FAR G-Sec holdings are unavailable."
+    else:
+        state = "last successful retrieval" if holdings.get("stale") else "retrieved"
+        holdings_text = (f"FPI FAR G-Sec holdings are ₹{holdings['value']:,.2f} crore "
+                         f"(CCIL, {state} {holdings['retrieved_at']}). The source supplies no observation date. "
+                         "This covers FAR government bonds only; a holdings level does not establish inflows or outflows.")
+    if not scores:
+        headline = "No current fetched signals available for comparison with the teaching thresholds."
+    else:
+        critical = scores.count(2)
+        watch = scores.count(1)
+        headline = (f"Of {len(scores)} usable fetched indicators, {critical} exceed critical teaching levels, "
+                    f"{watch} are in watch bands and {scores.count(0)} are below watch bands. "
+                    "Reference, manual and stale values are excluded from this count.")
+    return headline, [us_text + " " + brent_text, vix_text + " " + inr_text,
+                      spread_text + " " + holdings_text]
+
 # -----------------------------------------------------------------------------
 # GLOBAL STYLE
 # -----------------------------------------------------------------------------
@@ -1016,6 +1079,18 @@ with tabs[5]:
                 <b style="color:{c};-webkit-text-fill-color:{c};">{stat}</b></div>
               <div style="color:{LB};-webkit-text-fill-color:{LB};font-size:11.5px;margin-top:4px;">{escape(act)}</div>
             </div>""")
+
+    summary_headline, summary_paragraphs = market_summary(live, IND, USY, SPREAD_BPS, manual)
+    summary_body = "".join(
+        f"<p style='margin:8px 0;color:{TXT};line-height:1.65;'>{escape(paragraph)}</p>"
+        for paragraph in summary_paragraphs)
+    html(f"<div class='mp-card' style='border-color:rgba(255,215,0,.4);'>"
+         f"<div style='color:{GOLD};font-size:17px;font-weight:700;'>Dashboard Market Summary</div>"
+         f"<p style='color:{LB};line-height:1.55;'>{escape(summary_headline)}</p>"
+         f"<div style='font-size:13.5px;'>{summary_body}</div>"
+         f"<p style='color:{MUTED};font-size:11.5px;margin-bottom:0;'>"
+         "Updates from the displayed dashboard values on refresh or input changes. "
+         "Quotes are delayed or end-of-day; teaching thresholds are illustrative.</p></div>")
 
     st.markdown(f"<div style='color:{GOLD};font-weight:700;font-size:16px;margin-top:6px;'>Part 3 · Scenario Playbook — What Happens If…</div>",
                 unsafe_allow_html=True)
