@@ -1,5 +1,6 @@
 
 
+
 # =============================================================================
 # The Mountain Path Academy — India–US 10Y Bond Yield Spread
 # Educational Streamlit App  |  Prof. V. Ravichandran
@@ -7,6 +8,7 @@
 # =============================================================================
 import io
 import random
+import math
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -64,19 +66,34 @@ def _fred_latest(series_id: str):
     Raises on failure so the failure is NOT cached (Streamlit re-tries next run)."""
     if not _HAS_REQUESTS:
         raise RuntimeError("requests unavailable")
-    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
-    r = requests.get(url, timeout=15,
-                     headers={"User-Agent": _BROWSER_UA, "Accept": "text/csv,*/*"})
-    r.raise_for_status()
+    # Fetch a bounded window; retry transient rate limits/server failures.
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    start = (pd.Timestamp.now() - pd.Timedelta(days=730)).strftime("%Y-%m-%d")
+    with requests.Session() as session:
+        session.mount("https://", HTTPAdapter(max_retries=Retry(
+            total=2, backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=("GET",), respect_retry_after_header=False)))
+        r = session.get("https://fred.stlouisfed.org/graph/fredgraph.csv",
+                        params={"id": series_id, "cosd": start}, timeout=(5, 15),
+                        headers={"User-Agent": _BROWSER_UA, "Accept": "text/csv,*/*"})
+        r.raise_for_status()
     df = pd.read_csv(io.StringIO(r.text))
-    df = df.iloc[:, :2]
+    if len(df.columns) != 2 or series_id not in df.columns:
+        raise ValueError(f"Unexpected CSV columns for {series_id}")
     df.columns = ["date", "value"]
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["value"] = pd.to_numeric(df["value"], errors="coerce")
-    df = df.dropna()
+    df = df.dropna().sort_values("date")
+    df = df[df["date"] <= pd.Timestamp.now().normalize()]
     if df.empty:
-        return None
+        raise ValueError(f"No valid observations for {series_id}")
     last = df.iloc[-1]
-    return round(float(last["value"]), 2), str(last["date"])
+    value = float(last["value"])
+    if not math.isfinite(value):
+        raise ValueError(f"Non-finite observation for {series_id}")
+    return round(value, 2), last["date"].strftime("%Y-%m-%d")
 
 def _age_days(date_str):
     try:
@@ -98,7 +115,7 @@ def get_live_yields():
                 age = _age_days(out[f"{key}_date"])
                 out[f"{key}_stale"] = (age is not None and age > max_age)
         except Exception as e:  # network off, cloud restriction, format change
-            out["errors"].append(f"{key.upper()} ({sid}): {type(e).__name__}")
+            out["errors"].append(f"{key.upper()} ({sid}): {type(e).__name__}: {e}")
     return out
 
 # -----------------------------------------------------------------------------
@@ -244,70 +261,61 @@ def _think_card():
 # =============================================================================
 # DATA SETTINGS — live yields with manual override
 # =============================================================================
-with st.expander("⚙️  Data settings — live yields (FRED) & manual override", expanded=False):
+with st.expander("⚙️  Data settings — latest published yields & manual override", expanded=False):
     tog_col, btn_col = st.columns([3, 1])
     with tog_col:
-        use_live = st.toggle("Fetch live yields from FRED", value=False,
-                             help="Off by default so the app loads instantly with reference figures. "
-                                  "Turn on to pull real-time US 10Y (DGS10) and India 10Y "
-                                  "(INDIRLTLT01STM) from FRED — takes a few seconds. Cached for 1 hour.")
+        use_live = st.toggle("Fetch latest yields from FRED", value=True,
+                             help="US DGS10 is daily, not an intraday quote. India is monthly. "
+                                  "Successful downloads are cached for one hour.")
+        manual = st.toggle("Use manual yield overrides", value=False,
+                           help="Enable to edit yields. Disable to apply the latest fetched values.")
     with btn_col:
-        if use_live and st.button("↻ Refresh", help="Clear the cache and re-fetch live yields now"):
+        if st.button("↻ Refresh", disabled=not use_live,
+                     help="Download latest observations; manual overrides remain in effect"):
             _fred_latest.clear()
-            st.rerun()
-
     if use_live:
-        if not st.session_state.get("live_fetched", False):
-            # First fetch of the session (the slow one): show a thinking prompt while waiting
-            think_ph = st.empty()
-            with think_ph.container():
-                html(_think_card())
-            with st.spinner("Fetching live yields from FRED…"):
-                live = get_live_yields()
-            think_ph.empty()
-            st.session_state["live_fetched"] = True
-        else:
-            # Values are cached now — instant, no prompt/flash on later reruns
+        with st.spinner("Fetching latest published yields from FRED…"):
             live = get_live_yields()
     else:
-        html(f"<div style='color:{AMBER};-webkit-text-fill-color:{AMBER};font-size:12px;margin:2px 0 6px;'>"
-             f"⚡ Showing reference figures for an instant load — turn on "
-             f"<b>Fetch live yields from FRED</b> above for real-time data.</div>")
         live = {"us": None, "us_date": None, "india": None, "india_date": None, "errors": []}
-    us_seed  = live["us"]    if live.get("us")    is not None else DEFAULT_US
+        st.caption("Fetching is off. Reference figures are illustrative; enable manual overrides to edit.")
+
+    us_seed = live["us"] if live.get("us") is not None else DEFAULT_US
     ind_seed = live["india"] if live.get("india") is not None else DEFAULT_IND
+    # Synchronize before constructing widgets. Never overwrite an active manual override.
+    for key, seed in (("us_yield", us_seed), ("ind_yield", ind_seed)):
+        if not manual or key not in st.session_state:
+            st.session_state[key] = float(seed)
 
     def _src(val, date, sid, stale):
+        if manual:
+            return "Manual override — used in all calculations"
         if val is None:
-            return f"<span style='color:{MUTED};-webkit-text-fill-color:{MUTED};'>reference figure (feed unavailable)</span>"
-        if stale:
-            return (f"<span style='color:{AMBER};-webkit-text-fill-color:{AMBER};'>● lagged feed</span>"
-                    f"<span style='color:{MUTED};-webkit-text-fill-color:{MUTED};'> · FRED {sid} · as of {date} — verify/override</span>")
-        return (f"<span style='color:{GRN};-webkit-text-fill-color:{GRN};'>● live</span>"
-                f"<span style='color:{MUTED};-webkit-text-fill-color:{MUTED};'> · FRED {sid} · as of {date}</span>")
+            return "Illustrative reference figure — " + ("feed unavailable" if use_live else "fetching off")
+        status = "Lagged observation — verify/override" if stale else "Latest published observation"
+        return f"{status} · FRED {sid} · as of {date}"
 
     cset = st.columns(2)
     with cset[0]:
-        IND = st.number_input("India 10Y yield (%)", value=float(ind_seed), step=0.01,
-                              format="%.2f", key="ind_yield")
-        html(f"<div style='font-size:11.5px;margin-top:-6px;'>{_src(live.get('india'), live.get('india_date'),'INDIRLTLT01STM', live.get('india_stale'))}</div>")
+        IND = st.number_input("India 10Y yield (%)", step=0.01, format="%.2f",
+                              key="ind_yield", disabled=not manual)
+        st.caption(_src(live.get("india"), live.get("india_date"),
+                        "INDIRLTLT01STM", live.get("india_stale")))
     with cset[1]:
-        USY = st.number_input("US 10Y yield (%)", value=float(us_seed), step=0.01,
-                              format="%.2f", key="us_yield")
-        html(f"<div style='font-size:11.5px;margin-top:-6px;'>{_src(live.get('us'), live.get('us_date'),'DGS10', live.get('us_stale'))}</div>")
-
+        USY = st.number_input("US 10Y yield (%)", step=0.01, format="%.2f",
+                              key="us_yield", disabled=not manual)
+        st.caption(_src(live.get("us"), live.get("us_date"), "DGS10", live.get("us_stale")))
     if use_live and live.get("errors"):
-        html(f"<div style='color:{AMBER};-webkit-text-fill-color:{AMBER};font-size:11.5px;margin-top:6px;'>"
-             f"⚠ Live feed partially unavailable ({', '.join(live['errors'])}) — using reference figures where needed. "
-             f"You can type today's value above.</div>")
-    if use_live and live.get("india") is not None and live.get("india_date"):
-        html(f"<div style='color:{MUTED};-webkit-text-fill-color:{MUTED};font-size:11px;margin-top:6px;'>"
-             f"Note: the India 10Y feed (OECD) is monthly and can lag — override with today's G-Sec yield for a current read.</div>")
+        st.warning("Some feeds could not be loaded. Illustrative reference figures are used "
+                   "unless manual overrides are enabled.")
+        for error in live["errors"]:
+            st.caption(error)
+    if use_live and live.get("india") is not None:
+        st.caption("India's OECD feed is monthly and can lag; use a manual override for today's G-Sec yield.")
 
 SPREAD_BPS = round((IND - USY) * 100)
-IS_LIVE = bool(use_live and (
-    (live.get("us") is not None and not live.get("us_stale")) or
-    (live.get("india") is not None and not live.get("india_stale"))))
+IS_LIVE = bool(use_live and not manual and live.get("us") is not None
+               and not live.get("us_stale"))
 
 # =============================================================================
 # TABS
@@ -326,11 +334,11 @@ tabs = st.tabs([
 # -----------------------------------------------------------------------------
 with tabs[0]:
     if IS_LIVE:
-        badge = f"<span style='color:{GRN};-webkit-text-fill-color:{GRN};font-size:11px;'>● live</span>"
-        tail = "live from FRED · adjust in ⚙️ Data settings above"
+        badge = f"<span style='color:{GRN};-webkit-text-fill-color:{GRN};font-size:11px;'>● latest published US yield</span>"
+        tail = f"US DGS10 as of {live.get('us_date')} · India source shown in Data settings · spread may mix observation dates"
     else:
         badge = f"<span style='color:{AMBER};-webkit-text-fill-color:{AMBER};font-size:11px;'>reference</span>"
-        tail = "open ⚙️ Data settings above and turn on <b>live yields</b> for real-time data"
+        tail = "manual overrides in effect" if manual else "reference or lagged values · check Data settings"
     html(f"<div style='margin:2px 0 8px;color:{MUTED};-webkit-text-fill-color:{MUTED};font-size:12px;'>"
          f"Current yields {badge}<span style='color:{MUTED};-webkit-text-fill-color:{MUTED};'>"
          f" · {tail}</span></div>")
@@ -478,7 +486,7 @@ with tabs[2]:
     fig.update_yaxes(title_text="Spread (bps)", secondary_y=True, showgrid=False)
     fig.update_layout(title="India & US 10Y Yields and the Spread (2005–2025)",
                       barmode="overlay", hovermode="x unified")
-    st.plotly_chart(plotly_theme(fig, height=460), width="stretch")
+    st.plotly_chart(plotly_theme(fig, height=460), use_container_width=True)
 
     s1, s2, s3, s4, s5 = st.columns(5)
     stats = [("20-Yr Avg Spread","446 bps",LB),("Median","466 bps",LB),
@@ -563,7 +571,7 @@ with tabs[3]:
         fig.update_layout(title="Return vs US Treasury as the Rupee Moves",
                           xaxis_title="Rupee move (%)  ·  left = depreciation",
                           yaxis_title="Excess return vs UST (%)")
-        st.plotly_chart(plotly_theme(fig, height=430, legend=False), width="stretch")
+        st.plotly_chart(plotly_theme(fig, height=430, legend=False), use_container_width=True)
 
     moves  = [2.0, 0.0, -1.0, -2.0, -round(spread, 2), -3.0, -4.0, -6.0, -8.0, -10.0]
     labels = ["Strong Rupee","Stable Rupee","Mild Fall","Fall","Breakeven",
@@ -587,7 +595,7 @@ with tabs[3]:
     st.markdown(f"<div style='color:{GOLD};font-weight:700;font-size:15px;margin:6px 0;'>"
                 f"Rupee Depreciation Scenarios (1-Year Holding) — computed from India {IND:.2f}% / US {USY:.2f}%</div>",
                 unsafe_allow_html=True)
-    st.dataframe(scen, width="stretch", hide_index=True)
+    st.dataframe(scen, use_container_width=True, hide_index=True)
 
 # -----------------------------------------------------------------------------
 # TAB 5 — DRIVERS & IMPLICATIONS
@@ -608,7 +616,7 @@ with tabs[4]:
             "Ballooning US debt (~$34T+) and Treasury supply raise term premia on US bonds.",
             "Contained oil prices reduce imported inflation, allowing lower India yields."],
     })
-    st.dataframe(drivers, width="stretch", hide_index=True)
+    st.dataframe(drivers, use_container_width=True, hide_index=True)
 
     st.markdown(f"<div style='color:{GOLD};font-weight:700;font-size:16px;margin-top:10px;'>Part 2 · Impact on the Rupee (INR)</div>",
                 unsafe_allow_html=True)
@@ -618,7 +626,7 @@ with tabs[4]:
         "After (narrow spread)": ["~220 bps buffer","Marginal / volatile","Higher","Elevated"],
         "Risk Level": ["HIGH","HIGH","MEDIUM","MEDIUM-HIGH"],
     })
-    st.dataframe(inr, width="stretch", hide_index=True)
+    st.dataframe(inr, use_container_width=True, hide_index=True)
 
     html(f"""
     <div class="mp-card" style="border-color:rgba(220,53,69,.45);margin-top:10px;">
@@ -720,7 +728,7 @@ with tabs[5]:
         "Investor Playbook": ["Reduce EM bond exposure","Hedge via commodities","Move to cash/gold",
                               "Add duration in India bonds","Overweight EM bonds"],
     })
-    st.dataframe(play, width="stretch", hide_index=True)
+    st.dataframe(play, use_container_width=True, hide_index=True)
 
     html(f"""
     <div class="mp-card" style="border-color:rgba(255,215,0,.42);">
