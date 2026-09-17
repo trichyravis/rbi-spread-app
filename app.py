@@ -9,8 +9,10 @@
 import io
 import random
 import math
+import time
+from html import escape
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -130,24 +132,92 @@ def _treasury_latest():
     date, value = max(observations, key=lambda observation: observation[0])
     return round(value, 2), date.strftime("%Y-%m-%d")
 
+WEBSITE_MARKETS_URL = 'https://script.google.com/macros/s/AKfycbwbr79vFr7xw1KcEKdB3kwKo6C9ECmolQ9DfcSeALCMgk0ZYLefB3Ka1a2iiWpIskM/exec'
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _website_markets():
+    if not _HAS_REQUESTS:
+        raise RuntimeError("requests unavailable")
+    with requests.Session() as session:
+        response = session.get(WEBSITE_MARKETS_URL, params={"action": "markets"},
+                               timeout=(3, 7), headers={"Accept": "application/json"})
+        response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+        raise ValueError("Website returned an unexpected market-data response")
+    return payload
+
+def _website_quote(payload, symbol):
+    data = payload.get("data", {}).get(symbol)
+    if not isinstance(data, dict) or isinstance(data.get("price"), bool):
+        return None
+    try:
+        value = float(data["price"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    # Quote timestamps describe prices; history dates are used for EOD yields.
+    timestamp = pd.to_datetime(data.get("time"), unit="s", utc=True, errors="coerce")
+    if pd.isna(timestamp):
+        dates = pd.to_datetime(data.get("dates", []), utc=True, errors="coerce")
+        dates = dates[dates.notna()]
+        timestamp = dates.max() if len(dates) else pd.NaT
+    if pd.isna(timestamp) or timestamp > pd.Timestamp.now(tz="UTC") + pd.Timedelta(days=1):
+        return None
+    stale = bool(payload.get("stale")) or (pd.Timestamp.now(tz="UTC") - timestamp > pd.Timedelta(days=4))
+    return {"value": value, "date": timestamp.strftime("%Y-%m-%d"),
+            "as_of": timestamp.tz_convert("Asia/Kolkata").strftime("%d %b %Y %H:%M IST"),
+            "stale": stale, "state": data.get("state")}
+
 @st.cache_data(ttl=60, show_spinner=False)
 def get_live_yields():
     # Independent US sources run together; use the newest completed observation.
     out = {"us": None, "us_date": None, "us_source": None, "us_stale": False,
-           "india": None, "india_date": None, "india_stale": False, "errors": [], "diagnostics": []}
-    pool = ThreadPoolExecutor(max_workers=3)
+           "india": None, "india_date": None, "india_stale": False, "errors": [], "diagnostics": [], "markets": {}, "website_error": None}
+    pool = ThreadPoolExecutor(max_workers=4)
     jobs = {
+        pool.submit(_website_markets): ("website", "Academy markets feed", 4),
         pool.submit(_fred_latest, "DGS10"): ("us", "FRED DGS10", 10),
         pool.submit(_treasury_latest): ("us", "US Treasury nominal 10Y par yield", 10),
         pool.submit(_fred_latest, "INDIRLTLT01STM"): ("india", "FRED INDIRLTLT01STM", 100),
     }
-    done, pending = wait(jobs, timeout=10)
+    done, pending = set(), set(jobs)
+    deadline = time.monotonic() + 10
+    while pending:
+        finished, pending = wait(pending, timeout=max(0, deadline - time.monotonic()),
+                                 return_when=FIRST_COMPLETED)
+        done.update(finished)
+        website_future = next(f for f in jobs if jobs[f][0] == "website")
+        india_future = next(f for f in jobs if jobs[f][0] == "india")
+        if website_future in done and india_future in done:
+            try:
+                if _website_quote(website_future.result(), "^TNX"):
+                    break  # Working website feed avoids waiting for slow direct US sources.
+            except Exception:
+                pass
+        if not finished or time.monotonic() >= deadline:
+            break
     pool.shutdown(wait=False, cancel_futures=True)
     failures = []
     candidates = []
+    website_us_stale = False
     for future in done:
         key, source, max_age = jobs[future]
         try:
+            if key == "website":
+                payload = future.result()
+                for symbol in ("USDINR=X", "BZ=F", "^VIX", "^INDIAVIX"):
+                    quote = _website_quote(payload, symbol)
+                    if quote:
+                        out["markets"][symbol] = quote
+                quote = _website_quote(payload, "^TNX")
+                if quote:
+                    website_us_stale = quote["stale"]
+                    candidates.append((quote["date"], False, quote["value"], "Academy markets / FRED DGS10"))
+                else:
+                    out["website_error"] = "Website US 10Y observation is unavailable"
+                continue
             value, date = future.result()
             if key == "us":
                 candidates.append((date, source.startswith("US Treasury"), value, source))
@@ -165,10 +235,12 @@ def get_live_yields():
         date, _, value, source = max(candidates)
         out["us"], out["us_date"], out["us_source"] = value, date, source
         age = _age_days(date)
-        out["us_stale"] = age is not None and age > 10
+        out["us_stale"] = (age is not None and age > 10) or (source.startswith("Academy") and website_us_stale)
     for key, message in failures:
         out["diagnostics"].append(message)
-        if out[key] is None:
+        if key == "website":
+            out["website_error"] = message
+        elif out[key] is None:
             out["errors"].append(message)
     return out
 
@@ -319,7 +391,7 @@ with st.expander("⚙️  Data settings — latest published yields & manual ove
     tog_col, btn_col = st.columns([3, 1])
     with tog_col:
         use_live = st.toggle("Fetch latest published yields", value=True,
-                             help="US Treasury and FRED are checked independently. These are daily observations, "
+                             help="Academy markets, US Treasury and FRED provide daily yield observations, "
                                   "not intraday quotes. India is monthly. "
                                   "Successful downloads are cached for one hour.")
         manual = st.toggle("Use manual yield overrides", value=False,
@@ -329,9 +401,10 @@ with st.expander("⚙️  Data settings — latest published yields & manual ove
                      help="Download latest observations; manual overrides remain in effect"):
             _fred_latest.clear()
             _treasury_latest.clear()
+            _website_markets.clear()
             get_live_yields.clear()
     if use_live:
-        with st.spinner("Checking US Treasury and FRED for published yields…"):
+        with st.spinner("Checking Academy markets and official yield sources…"):
             live = get_live_yields()
     else:
         live = {"us": None, "us_date": None, "india": None, "india_date": None, "errors": []}
@@ -363,6 +436,8 @@ with st.expander("⚙️  Data settings — latest published yields & manual ove
         USY = st.number_input("US 10Y yield (%)", step=0.01, format="%.2f",
                               key="us_yield", disabled=not manual)
         st.caption(_src(live.get("us"), live.get("us_date"), "DGS10", live.get("us_stale")))
+    if live.get("website_error"):
+        st.caption("Academy market feed unavailable; market cards show unavailable rather than example prices.")
     if manual:
         st.info("Manual overrides are ON. Turn them OFF to apply downloaded yields automatically.")
     if use_live and live.get("errors"):
@@ -746,18 +821,33 @@ with tabs[5]:
               <div style="color:{MUTED};-webkit-text-fill-color:{MUTED};font-size:12.5px;line-height:1.5;">{ch}</div>
             </div>""")
 
-    st.markdown(f"<div style='color:{GOLD};font-weight:700;font-size:16px;margin-top:6px;'>Part 2 · Live Monitoring Dashboard "
-                f"<span style='color:{MUTED};font-size:12px;font-weight:400;'>(illustrative)</span></div>",
-                unsafe_allow_html=True)
+    st.markdown(f"<div style='color:{GOLD};font-weight:700;font-size:16px;margin-top:6px;'>"
+                "Part 2 · Market Monitoring Dashboard</div>", unsafe_allow_html=True)
+    st.caption("Academy markets: FX, Brent futures and VIX are delayed or last available quotes; US yields are end-of-day. "
+               "Click Refresh in Data settings to update. Thresholds are illustrative teaching levels.")
     us_stat = ("Critical", RED) if USY >= 4.75 else (("Watch", AMBER) if USY >= 4.55 else ("Safe", GRN))
     sp_stat = ("Critical", RED) if SPREAD_BPS <= 200 else (("Watch", AMBER) if SPREAD_BPS <= 240 else ("Safe", GRN))
+    def market_card(label, symbol, threshold, watch):
+        quote = live.get("markets", {}).get(symbol)
+        if quote is None:
+            return (label, "—", str(threshold), "Unavailable", MUTED, "No current quote from Academy markets")
+        value = quote["value"]
+        status, color = ("Critical", RED) if value >= threshold else (("Watch", AMBER) if value >= watch else ("Safe", GRN))
+        if quote["stale"]:
+            status, color = "Stale — verify", AMBER
+        return (label, f"{value:.2f}", str(threshold), status, color,
+                "Academy / Yahoo · " + quote["as_of"] + " · delayed or last quote")
+    us_note = ("Manual override" if manual else
+               (f"{live.get('us_source')} · {live.get('us_date')}" if live.get("us") is not None
+                else "Illustrative reference — no fetched US yield"))
     dash = [
-        ("US 10Y Treasury", f"{USY:.2f}%", "4.75%", us_stat[0], us_stat[1], "Monitor Fed guidance"),
-        ("Brent Crude ($/bbl)","78","90","Safe",GRN,"Track OPEC decisions"),
-        ("VIX Index","16","25","Safe",GRN,"Global risk sentiment ok"),
-        ("USD/INR","84.5","86","Watch",AMBER,"RBI intervention likely"),
-        ("India–US Spread (bps)", f"{SPREAD_BPS}", "200", sp_stat[0], sp_stat[1], "Below-200 = red flag"),
-        ("FII Bond Holdings ($bn)","32","25","Safe",GRN,"Watch weekly flows"),
+        ("US 10Y Treasury", f"{USY:.2f}%", "4.75%", us_stat[0] if manual or live.get("us") is not None else "Reference",
+         us_stat[1] if manual or live.get("us") is not None else MUTED, us_note),
+        market_card("Brent futures ($/bbl)", "BZ=F", 90, 85),
+        market_card("US VIX Index", "^VIX", 25, 18),
+        market_card("USD/INR", "USDINR=X", 86, 85),
+        ("India–US Spread (bps)", f"{SPREAD_BPS}", "200", sp_stat[0], sp_stat[1], "Computed from displayed yields; India may be monthly or reference"),
+        ("FII Bond Holdings ($bn)", "—", "25", "Unavailable", MUTED, "Not supplied by Academy markets"),
     ]
     dcols = st.columns(3)
     for i,(ind,cur,thr,stat,c,act) in enumerate(dash):
@@ -771,7 +861,7 @@ with tabs[5]:
               <div style="color:{c};-webkit-text-fill-color:{c};font-size:24px;font-weight:800;margin:2px 0;">{cur}</div>
               <div style="color:{MUTED};-webkit-text-fill-color:{MUTED};font-size:11.5px;">Threshold {thr} ·
                 <b style="color:{c};-webkit-text-fill-color:{c};">{stat}</b></div>
-              <div style="color:{LB};-webkit-text-fill-color:{LB};font-size:11.5px;margin-top:4px;">{act}</div>
+              <div style="color:{LB};-webkit-text-fill-color:{LB};font-size:11.5px;margin-top:4px;">{escape(act)}</div>
             </div>""")
 
     st.markdown(f"<div style='color:{GOLD};font-weight:700;font-size:16px;margin-top:6px;'>Part 3 · Scenario Playbook — What Happens If…</div>",
