@@ -957,23 +957,75 @@ with tabs[4]:
     })
     st.dataframe(inr, use_container_width=True, hide_index=True)
 
-    html(f"""
-    <div class="mp-card" style="border-color:rgba(220,53,69,.45);margin-top:10px;">
-      <div style="color:{RED};-webkit-text-fill-color:{RED};font-weight:700;font-size:15px;margin-bottom:8px;">
-        Part 3 · The RBI's Dilemma — Less Room to Cut Rates</div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;color:{TXT};
-           -webkit-text-fill-color:{TXT};font-size:13px;font-weight:600;">
-        <span style="background:{MID};padding:5px 10px;border-radius:6px;">RBI cuts rates</span> →
-        <span style="background:{MID};padding:5px 10px;border-radius:6px;">Indian yields fall</span> →
-        <span style="background:{MID};padding:5px 10px;border-radius:6px;">spread shrinks</span> →
-        <span style="background:{MID};padding:5px 10px;border-radius:6px;">foreign money leaves</span> →
-        <span style="background:{MID};padding:5px 10px;border-radius:6px;">rupee weakens</span> →
-        <span style="background:{MID};padding:5px 10px;border-radius:6px;">imported inflation rises</span> →
-        <span style="background:{RED};-webkit-text-fill-color:#fff;color:#fff;padding:5px 10px;border-radius:6px;">RBI cannot cut</span>
-      </div>
-      <div style="color:{MUTED};-webkit-text-fill-color:{MUTED};font-size:12.5px;margin-top:8px;">
-        External constraints override domestic growth priorities. The narrower the spread, the tighter the trap.</div>
-    </div>""")
+    html("""
+<style>
+.fed-panel{background:#112240;border:1px solid #355071;border-radius:18px;padding:26px;margin:16px 0 24px;color:#e6f1ff;font-family:inherit}
+.fed-panel *{box-sizing:border-box;-webkit-text-fill-color:currentColor}
+.fed-eyebrow{color:#FFD700;font-size:14px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.fed-panel h3{color:#e6f1ff;font-size:24px;line-height:1.3;margin:8px 0}
+.fed-intro{color:#c3cee2;font-size:16px;line-height:1.6;margin:0 0 22px}
+.fed-paths{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px}
+.fed-path{--accent:#ffabb3;--tint:#36253b;border:1px solid #805061;border-radius:14px;padding:20px;background:#14233b}
+.fed-path.cut{--accent:#8ee4c2;--tint:#193c3d;border-color:#386f65}
+.fed-path h4{color:var(--accent);font-size:21px;line-height:1.4;margin:0 0 6px}
+.fed-sub{color:#c3cee2;font-size:14px;line-height:1.5;margin:0 0 18px}
+.fed-steps{list-style:none;margin:0;padding:0;counter-reset:step}
+.fed-steps li{position:relative;background:#1b304c;border-radius:9px;padding:12px 14px 12px 46px;font-size:16px;line-height:1.5;margin:0 0 27px;counter-increment:step;color:#e6f1ff}
+.fed-steps li:before{content:counter(step);position:absolute;left:14px;top:13px;color:var(--accent);font-size:14px;font-weight:800}
+.fed-steps li:after{content:'↓';position:absolute;left:50%;bottom:-25px;color:var(--accent);font-size:20px;line-height:24px}
+.fed-outcome{background:var(--tint);border:1px solid var(--accent);border-radius:10px;padding:15px;color:#e6f1ff;font-size:16px;line-height:1.6}
+.fed-outcome strong{display:block;color:var(--accent);font-size:18px;margin-bottom:3px}
+.fed-decision{border-top:1px solid #355071;margin-top:24px;padding-top:20px}
+.fed-decision h4{color:#FFD700;font-size:18px;margin:0 0 12px}
+.fed-choices{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.fed-choice{border:1px solid #355071;border-radius:10px;padding:14px;font-size:15px;line-height:1.6;color:#c3cee2}
+.fed-choice b{display:block;color:#e6f1ff;font-size:16px;margin-bottom:4px}
+.fed-note{color:#c3cee2;font-size:14px;line-height:1.65;margin:18px 0 0}
+.fed-note b{color:#FFD700}
+@media(max-width:700px){.fed-paths,.fed-choices{grid-template-columns:1fr}.fed-panel{padding:18px}.fed-path{padding:16px}.fed-panel h3{font-size:22px}}
+</style>
+<section class="fed-panel" aria-labelledby="fed-title">
+<div class="fed-eyebrow">Part 3 · Fed moves &amp; RBI choices</div>
+<h3 id="fed-title">When the Fed changes rates, what can the RBI do?</h3>
+<p class="fed-intro">The RBI does not automatically follow the Fed. US rates can change the pressure on India’s currency and inflation—and the RBI’s room to act.</p>
+<div class="fed-paths">
+<article class="fed-path" aria-labelledby="fed-hike">
+<h4 id="fed-hike">↑ Scenario A · Fed raises rates</h4>
+<p class="fed-sub">Possible path: more pressure on the rupee</p>
+<ol class="fed-steps">
+<li>US bond yields may rise.</li>
+<li>If Indian yields rise less, India’s yield advantage narrows.</li>
+<li>Investors may move money toward US assets.</li>
+<li>The rupee may weaken against the dollar.</li>
+<li>Imports become costlier in rupees, adding inflation pressure.</li>
+</ol>
+<div class="fed-outcome"><strong>RBI: less room to cut</strong>May hold rates—or raise them if Indian inflation requires it.</div>
+</article>
+<article class="fed-path cut" aria-labelledby="fed-cut">
+<h4 id="fed-cut">↓ Scenario B · Fed cuts rates</h4>
+<p class="fed-sub">Possible path: some relief for the rupee</p>
+<ol class="fed-steps">
+<li>US bond yields may fall.</li>
+<li>If Indian yields fall less, India’s yield advantage widens.</li>
+<li>Indian assets may attract more foreign investment.</li>
+<li>The rupee may strengthen or stabilise.</li>
+<li>Pressure from currency-driven import costs may ease.</li>
+</ol>
+<div class="fed-outcome"><strong>RBI: more room to cut</strong>May cut to support growth if Indian inflation allows.</div>
+</article>
+</div>
+<div class="fed-decision">
+<h4>The RBI’s final decision depends on India</h4>
+<div class="fed-choices">
+<div class="fed-choice"><b>Inflation too high?</b>Holding or raising rates may be appropriate.</div>
+<div class="fed-choice"><b>Growth weak, inflation low?</b>A rate cut may be possible—even if the Fed hikes.</div>
+<div class="fed-choice"><b>Rupee under pressure?</b>The RBI may delay cuts and use forex intervention to smooth volatility.</div>
+</div>
+</div>
+<p class="fed-note"><b>If the RBI cuts first:</b> Indian yields may fall relative to US yields, narrowing the spread and increasing currency pressure. This can constrain further cuts; it does not make them impossible.</p>
+<p class="fed-note"><b>Read these as possible paths, not predictions.</b> The spread means India’s bond yield minus the comparable US bond yield. Policy rates and 10-year yields do not move one-for-one. Market expectations, oil prices, currency-hedging costs and global risk sentiment also matter. During a global crisis, money may seek safety in dollars even when the Fed cuts.</p>
+</section>
+""")
 
     html(f"""
     <div class="mp-card" style="border-color:rgba(40,167,69,.45);">
